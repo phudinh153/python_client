@@ -12,6 +12,7 @@ from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer, MediaRelay
 from aiortc.mediastreams import MediaStreamTrack
 from aiortc.rtcrtpsender import RTCRtpSender
+from requests import options
 import socketio
 
 ROOT = os.path.dirname(__file__)
@@ -22,13 +23,14 @@ webcam = None
 USERNAME = "webcam"
 ROOM = "1"
 
+
 async def join_room() -> None:
     print("emit join")
     print(f"username: {USERNAME}, room: {ROOM}")
     await sio.emit("join", {"username": USERNAME, "room": ROOM})
 
 
-async def start_server():
+async def start_server() -> None:
     # Connect to the signaling server
     signaling_server = "http://127.0.0.1:5004"
 
@@ -81,7 +83,16 @@ async def start_server():
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
 
-        await sio.emit('answer', {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+        await sio.emit(
+            "answer",
+            {
+                "sdp": pc.localDescription.sdp,
+                "type": pc.localDescription.type,
+                "username": USERNAME,
+                "room": ROOM,
+            },
+        )
+        print("emit answer")
         # return web.Response(
         #     content_type="application/json",
         #     text=json.dumps(
@@ -89,31 +100,35 @@ async def start_server():
         #     ),
         # )
 
-        @sio.event
-        async def connect() -> None:
-            try:
-                print("Connected to server %s" % signaling_server)
-                # await send_ack()
-                await join_room()
-            except Exception as e:
-                print("Error in connect event handler: ", e)
-
+    @sio.event
+    async def connect() -> None:
         try:
-            await sio.connect(signaling_server)
-            await sio.wait()
+            print("Connected to server %s" % signaling_server)
+            # await send_ack()
+            await join_room()
         except Exception as e:
-            print("Exception occurred: ", e)
-            os.kill(os.getpid(), signal.SIGILL)
+            print("Error in connect event handler: ", e)
+
+    try:
+        await sio.connect(signaling_server)
+        await sio.wait()
+    except Exception as e:
+        print("Exception occurred: ", e)
+        os.kill(os.getpid(), signal.SIGILL)
 
 
-def create_local_tracks(play_from, decode) -> tuple[MediaStreamTrack, MediaStreamTrack] | tuple[None, MediaStreamTrack]:
+def create_local_tracks(
+    play_from, decode
+) -> tuple[MediaStreamTrack, MediaStreamTrack] | tuple[None, MediaStreamTrack]:
     global relay, webcam
 
     if play_from:
         player = MediaPlayer(play_from, decode=decode)
         return player.audio, player.video
     else:
-        options = {"framerate": "30", "video_size": "640x480"}
+        # options = {"framerate": "30", "video_size": "640x480"}
+        options = {"framerate": "15", "video_size": "640x480"}
+        # options = {"framerate": "10", "video_size": "160x120"}
         if relay is None:
             if platform.system() == "Darwin":
                 webcam = MediaPlayer(
@@ -121,7 +136,10 @@ def create_local_tracks(play_from, decode) -> tuple[MediaStreamTrack, MediaStrea
                 )
             elif platform.system() == "Windows":
                 webcam = MediaPlayer(
-                    "video=Integrated Camera", format="dshow", options=options
+                    "video=Integrated Camera",
+                    format="dshow",
+                    options=options,
+                    # "video=Integrated Camera", format="dshow",
                 )
             else:
                 webcam = MediaPlayer("/dev/video0", format="v4l2", options=options)
