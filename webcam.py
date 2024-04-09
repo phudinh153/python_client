@@ -8,7 +8,7 @@ import platform
 import ssl
 import signal
 from aiohttp import web
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceServer, RTCConfiguration
 from aiortc.contrib.media import MediaPlayer, MediaRelay
 from aiortc.mediastreams import MediaStreamTrack
 from aiortc.rtcrtpsender import RTCRtpSender
@@ -32,7 +32,8 @@ async def join_room() -> None:
 
 async def start_server() -> None:
     # Connect to the signaling server
-    signaling_server = "http://127.0.0.1:5004"
+    # signaling_server = "http://127.0.0.1:5004"
+    signaling_server = "https://signaling-server-pfm2.onrender.com/"
 
     # @sio.event
     # async def connect() -> None:
@@ -48,8 +49,13 @@ async def start_server() -> None:
         # params = await request.json()
         params = data
         offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
-
-        pc = RTCPeerConnection()
+        ice_servers = [
+            RTCIceServer(
+                urls=["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"]
+            ),
+        ]
+        config = RTCConfiguration(iceServers=ice_servers)
+        pc = RTCPeerConnection(config)
         pcs.add(pc)
 
         @pc.on("connectionstatechange")
@@ -121,14 +127,15 @@ def create_local_tracks(
     play_from, decode
 ) -> tuple[MediaStreamTrack, MediaStreamTrack] | tuple[None, MediaStreamTrack]:
     global relay, webcam
-
+    
     if play_from:
         player = MediaPlayer(play_from, decode=decode)
+        print(player)
         return player.audio, player.video
     else:
         # options = {"framerate": "30", "video_size": "640x480"}
-        options = {"framerate": "15", "video_size": "640x480"}
-        # options = {"framerate": "10", "video_size": "160x120"}
+        # options = {"framerate": "15", "video_size": "640x480"}
+        options = {"framerate": "10", "video_size": "160x120"}
         if relay is None:
             if platform.system() == "Darwin":
                 webcam = MediaPlayer(
