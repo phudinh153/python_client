@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+from asyncio import Queue
 from http.client import USE_PROXY
 import json
 import logging
@@ -16,7 +17,7 @@ from requests import options
 import socketio
 
 ROOT = os.path.dirname(__file__)
-
+offer_queue = Queue()
 sio = socketio.AsyncClient()
 relay = None
 webcam = None
@@ -43,68 +44,75 @@ async def start_server() -> None:
     # @sio.event
     # async def disconnect() -> None:
     #     print("Disconnected from the signaling server")
-
     @sio.event
     async def offer(data) -> None:
-        # params = await request.json()
-        params = data
-        offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
-        ice_servers = [
-            RTCIceServer(
-                urls=["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"]
-            ),
-        ]
-        config = RTCConfiguration(iceServers=ice_servers)
-        pc = RTCPeerConnection(config)
-        pcs.add(pc)
+        # Add the offer to the queue
+        await offer_queue.put(data)
 
-        @pc.on("connectionstatechange")
-        async def on_connectionstatechange():
-            print("Connection state is %s" % pc.connectionState)
-            if pc.connectionState == "failed":
-                await pc.close()
-                pcs.discard(pc)
+    async def process_offers():
+        while True:
+            # Wait for an offer to be added to the queue
+            data = await offer_queue.get()
+            params = data
+            offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
+            ice_servers = [
+                RTCIceServer(
+                    urls=["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"]
+                ),
+            ]
+            config = RTCConfiguration(iceServers=ice_servers)
+            pc = RTCPeerConnection(config)
+            pcs.add(pc)
 
-        # open media source
-        audio, video = create_local_tracks(
-            args.play_from, decode=not args.play_without_decoding
-        )
+            @pc.on("connectionstatechange")
+            async def on_connectionstatechange():
+                print("Connection state is %s" % pc.connectionState)
+                if pc.connectionState == "failed":
+                    await pc.close()
+                    pcs.discard(pc)
 
-        if audio:
-            audio_sender = pc.addTrack(audio)
-            if args.audio_codec:
-                force_codec(pc, audio_sender, args.audio_codec)
-            elif args.play_without_decoding:
-                raise Exception("You must specify the audio codec using --audio-codec")
+            # open media source
+            audio, video = create_local_tracks(
+                args.play_from, decode=not args.play_without_decoding
+            )
 
-        if video:
-            video_sender = pc.addTrack(video)
-            if args.video_codec:
-                force_codec(pc, video_sender, args.video_codec)
-            elif args.play_without_decoding:
-                raise Exception("You must specify the video codec using --video-codec")
+            if audio:
+                audio_sender = pc.addTrack(audio)
+                if args.audio_codec:
+                    force_codec(pc, audio_sender, args.audio_codec)
+                elif args.play_without_decoding:
+                    raise Exception("You must specify the audio codec using --audio-codec")
 
-        await pc.setRemoteDescription(offer)
+            if video:
+                video_sender = pc.addTrack(video)
+                if args.video_codec:
+                    force_codec(pc, video_sender, args.video_codec)
+                elif args.play_without_decoding:
+                    raise Exception("You must specify the video codec using --video-codec")
 
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
+            await pc.setRemoteDescription(offer)
 
-        await sio.emit(
-            "answer",
-            {
-                "sdp": pc.localDescription.sdp,
-                "type": pc.localDescription.type,
-                "username": USERNAME,
-                "room": ROOM,
-            },
-        )
-        print("emit answer")
-        # return web.Response(
-        #     content_type="application/json",
-        #     text=json.dumps(
-        #         {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
-        #     ),
-        # )
+            answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+
+            await sio.emit(
+                "answer",
+                {
+                    "sdp": pc.localDescription.sdp,
+                    "type": pc.localDescription.type,
+                    "username": USERNAME,
+                    "room": ROOM,
+                },
+            )
+            print("emit answer")
+            # return web.Response(
+            #     content_type="application/json",
+            #     text=json.dumps(
+            #         {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+            #     ),
+            # )
+            # Indicate that the offer has been processed
+            offer_queue.task_done()
 
     @sio.event
     async def connect() -> None:
@@ -115,6 +123,7 @@ async def start_server() -> None:
         except Exception as e:
             print("Error in connect event handler: ", e)
 
+    asyncio.create_task(process_offers())
     try:
         await sio.connect(signaling_server)
         await sio.wait()
