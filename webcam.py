@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import platform
+import re
 import ssl
 import signal
 from aiohttp import web
@@ -22,13 +23,14 @@ sio = socketio.AsyncClient()
 relay = None
 webcam = None
 USERNAME = "webcam"
-ROOM = "1"
+ROOM = ["1", "2", "3", "4", "5"]
+pcs = {}
 
 
-async def join_room() -> None:
+async def join_room(room) -> None:
     print("emit join")
-    print(f"username: {USERNAME}, room: {ROOM}")
-    await sio.emit("join", {"username": USERNAME, "room": ROOM})
+    print(f"username: {USERNAME}, room: {room}")
+    await sio.emit("join", {"username": USERNAME, "room": room})
 
 
 async def start_server() -> None:
@@ -55,6 +57,11 @@ async def start_server() -> None:
             data = await offer_queue.get()
             params = data
             offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
+            room = data["room"]
+            if room in pcs:
+                print("Room already in use")
+                raise Exception("Room already in use")
+
             ice_servers = [
                 RTCIceServer(
                     urls=["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"]
@@ -62,14 +69,15 @@ async def start_server() -> None:
             ]
             config = RTCConfiguration(iceServers=ice_servers)
             pc = RTCPeerConnection(config)
-            pcs.add(pc)
+            # pcs.add(pc)
+            pcs[room] = pc
 
             @pc.on("connectionstatechange")
             async def on_connectionstatechange():
                 print("Connection state is %s" % pc.connectionState)
                 if pc.connectionState == "failed":
                     await pc.close()
-                    pcs.discard(pc)
+                    del pcs[room]
 
             # open media source
             audio, video = create_local_tracks(
@@ -101,7 +109,7 @@ async def start_server() -> None:
                     "sdp": pc.localDescription.sdp,
                     "type": pc.localDescription.type,
                     "username": USERNAME,
-                    "room": ROOM,
+                    "room": room,
                 },
             )
             print("emit answer")
@@ -119,7 +127,10 @@ async def start_server() -> None:
         try:
             print("Connected to server %s" % signaling_server)
             # await send_ack()
-            await join_room()
+            # await join_room()
+            for room in ROOM:
+                await join_room(room)
+
         except Exception as e:
             print("Error in connect event handler: ", e)
 
@@ -180,9 +191,6 @@ async def index(request):
 async def javascript(request):
     content = open(os.path.join(ROOT, "client.js"), "r").read()
     return web.Response(content_type="application/javascript", text=content)
-
-
-pcs = set()
 
 
 async def on_shutdown(app):
