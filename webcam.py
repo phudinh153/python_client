@@ -23,7 +23,7 @@ sio = socketio.AsyncClient()
 relay = None
 webcam = None
 USERNAME = "webcam"
-ROOM = ["1", "2", "3", "4", "5"]
+ROOM = ["1", "2"]
 pcs = {}
 
 
