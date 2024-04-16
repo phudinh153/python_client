@@ -1,10 +1,12 @@
 import argparse
 import asyncio
+from asyncio import Queue
 from http.client import USE_PROXY
 import json
 import logging
 import os
 import platform
+import re
 import ssl
 import signal
 from aiohttp import web
@@ -16,18 +18,19 @@ from requests import options
 import socketio
 
 ROOT = os.path.dirname(__file__)
-
+offer_queue = Queue()
 sio = socketio.AsyncClient()
 relay = None
 webcam = None
 USERNAME = "webcam"
-ROOM = "1"
+ROOM = ["1", "2"]
+pcs = {}
 
 
-async def join_room() -> None:
+async def join_room(room) -> None:
     print("emit join")
-    print(f"username: {USERNAME}, room: {ROOM}")
-    await sio.emit("join", {"username": USERNAME, "room": ROOM})
+    print(f"username: {USERNAME}, room: {room}")
+    await sio.emit("join", {"username": USERNAME, "room": room})
 
 
 async def start_server() -> None:
@@ -43,78 +46,95 @@ async def start_server() -> None:
     # @sio.event
     # async def disconnect() -> None:
     #     print("Disconnected from the signaling server")
-
     @sio.event
     async def offer(data) -> None:
-        # params = await request.json()
-        params = data
-        offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
-        ice_servers = [
-            RTCIceServer(
-                urls=["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"]
-            ),
-        ]
-        config = RTCConfiguration(iceServers=ice_servers)
-        pc = RTCPeerConnection(config)
-        pcs.add(pc)
+        # Add the offer to the queue
+        await offer_queue.put(data)
 
-        @pc.on("connectionstatechange")
-        async def on_connectionstatechange():
-            print("Connection state is %s" % pc.connectionState)
-            if pc.connectionState == "failed":
-                await pc.close()
-                pcs.discard(pc)
+    async def process_offers():
+        while True:
+            # Wait for an offer to be added to the queue
+            data = await offer_queue.get()
+            params = data
+            offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
+            room = data["room"]
+            if room in pcs:
+                print("Room already in use")
+                raise Exception("Room already in use")
 
-        # open media source
-        audio, video = create_local_tracks(
-            args.play_from, decode=not args.play_without_decoding
-        )
+            ice_servers = [
+                RTCIceServer(
+                    urls=["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"]
+                ),
+            ]
+            config = RTCConfiguration(iceServers=ice_servers)
+            pc = RTCPeerConnection(config)
+            # pcs.add(pc)
+            pcs[room] = pc
 
-        if audio:
-            audio_sender = pc.addTrack(audio)
-            if args.audio_codec:
-                force_codec(pc, audio_sender, args.audio_codec)
-            elif args.play_without_decoding:
-                raise Exception("You must specify the audio codec using --audio-codec")
+            @pc.on("connectionstatechange")
+            async def on_connectionstatechange():
+                print("Connection state is %s" % pc.connectionState)
+                if pc.connectionState == "failed":
+                    await pc.close()
+                    del pcs[room]
 
-        if video:
-            video_sender = pc.addTrack(video)
-            if args.video_codec:
-                force_codec(pc, video_sender, args.video_codec)
-            elif args.play_without_decoding:
-                raise Exception("You must specify the video codec using --video-codec")
+            # open media source
+            audio, video = create_local_tracks(
+                args.play_from, decode=not args.play_without_decoding
+            )
 
-        await pc.setRemoteDescription(offer)
+            if audio:
+                audio_sender = pc.addTrack(audio)
+                if args.audio_codec:
+                    force_codec(pc, audio_sender, args.audio_codec)
+                elif args.play_without_decoding:
+                    raise Exception("You must specify the audio codec using --audio-codec")
 
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
+            if video:
+                video_sender = pc.addTrack(video)
+                if args.video_codec:
+                    force_codec(pc, video_sender, args.video_codec)
+                elif args.play_without_decoding:
+                    raise Exception("You must specify the video codec using --video-codec")
 
-        await sio.emit(
-            "answer",
-            {
-                "sdp": pc.localDescription.sdp,
-                "type": pc.localDescription.type,
-                "username": USERNAME,
-                "room": ROOM,
-            },
-        )
-        print("emit answer")
-        # return web.Response(
-        #     content_type="application/json",
-        #     text=json.dumps(
-        #         {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
-        #     ),
-        # )
+            await pc.setRemoteDescription(offer)
+
+            answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+
+            await sio.emit(
+                "answer",
+                {
+                    "sdp": pc.localDescription.sdp,
+                    "type": pc.localDescription.type,
+                    "username": USERNAME,
+                    "room": room,
+                },
+            )
+            print("emit answer")
+            # return web.Response(
+            #     content_type="application/json",
+            #     text=json.dumps(
+            #         {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+            #     ),
+            # )
+            # Indicate that the offer has been processed
+            offer_queue.task_done()
 
     @sio.event
     async def connect() -> None:
         try:
             print("Connected to server %s" % signaling_server)
             # await send_ack()
-            await join_room()
+            # await join_room()
+            for room in ROOM:
+                await join_room(room)
+
         except Exception as e:
             print("Error in connect event handler: ", e)
 
+    asyncio.create_task(process_offers())
     try:
         await sio.connect(signaling_server)
         await sio.wait()
@@ -171,9 +191,6 @@ async def index(request):
 async def javascript(request):
     content = open(os.path.join(ROOT, "client.js"), "r").read()
     return web.Response(content_type="application/javascript", text=content)
-
-
-pcs = set()
 
 
 async def on_shutdown(app):
