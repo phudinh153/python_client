@@ -35,18 +35,8 @@ async def start_server() -> None:
     # signaling_server = "http://127.0.0.1:5004"
     signaling_server = "https://signaling-server-pfm2.onrender.com/"
 
-    # @sio.event
-    # async def connect() -> None:
-    #     print("Connected to the signaling server")
-
-    # Disconnect from the signaling server
-    # @sio.event
-    # async def disconnect() -> None:
-    #     print("Disconnected from the signaling server")
-
     @sio.event
     async def offer(data) -> None:
-        # params = await request.json()
         params = data
         offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
         ice_servers = [
@@ -99,12 +89,6 @@ async def start_server() -> None:
             },
         )
         print("emit answer")
-        # return web.Response(
-        #     content_type="application/json",
-        #     text=json.dumps(
-        #         {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
-        #     ),
-        # )
 
     @sio.event
     async def connect() -> None:
@@ -146,7 +130,6 @@ def create_local_tracks(
                     "video=Integrated Camera",
                     format="dshow",
                     options=options,
-                    # "video=Integrated Camera", format="dshow",
                 )
             else:
                 webcam = MediaPlayer("/dev/video0", format="v4l2", options=options)
@@ -223,11 +206,5 @@ if __name__ == "__main__":
     else:
         ssl_context = None
 
-    # app = web.Application()
-    # app.on_shutdown.append(on_shutdown)
-    # app.router.add_get("/", index)
-    # app.router.add_get("/client.js", javascript)
-    # app.router.add_post("/offer", offer)
     loop = asyncio.get_event_loop()
     loop.run_until_complete(start_server())
-    # web.run_app(app, host=args.host, port=args.port, ssl_context=ssl_context)
