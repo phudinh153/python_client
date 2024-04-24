@@ -3,22 +3,30 @@ import asyncio
 from http.client import USE_PROXY
 import json
 import logging
+from msilib.schema import Media
 import os
 import platform
 import ssl
 import signal
 from aiohttp import web
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceServer, RTCConfiguration
+from aiortc import (
+    RTCPeerConnection,
+    RTCSessionDescription,
+    RTCIceServer,
+    RTCConfiguration,
+)
 from aiortc.contrib.media import MediaPlayer, MediaRelay
 from aiortc.mediastreams import MediaStreamTrack
 from aiortc.rtcrtpsender import RTCRtpSender
 from requests import options
 import socketio
 
+from video_track import VideoTransformTrack
+
 ROOT = os.path.dirname(__file__)
 
 sio = socketio.AsyncClient()
-relay = None
+relay = MediaRelay()
 webcam = None
 USERNAME = "webcam"
 ROOM = "1"
@@ -30,7 +38,7 @@ async def join_room() -> None:
     await sio.emit("join", {"username": USERNAME, "room": ROOM})
 
 
-async def start_server() -> None:
+async def start_server(args) -> None:
     # Connect to the signaling server
     # signaling_server = "http://127.0.0.1:5004"
     signaling_server = "https://signaling-server-pfm2.onrender.com/"
@@ -47,6 +55,11 @@ async def start_server() -> None:
         config = RTCConfiguration(iceServers=ice_servers)
         pc = RTCPeerConnection(config)
         pcs.add(pc)
+        player = MediaPlayer(os.path.join(ROOT, "test.mkv"))
+
+        @pc.on("iceconnectionstatechange")
+        async def on_iceconnectionstatechange():
+            print("ICE connection state is %s" % pc.iceConnectionState)
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
@@ -56,26 +69,30 @@ async def start_server() -> None:
                 pcs.discard(pc)
 
         # open media source
-        audio, video = create_local_tracks(
-            args.play_from, decode=not args.play_without_decoding
+        # audio, video = create_local_tracks(
+        #     args.play_from, decode=not args.play_without_decoding
+        # )
+        # @pc.on("track")
+        # def on_track(track):
+        #     # log_info("Track %s received", track.kind)
+        #     print("Track %s received" % track.kind)
+
+        #     if track.kind == "audio":
+        #         pc.addTrack(player.audio)
+        #     elif track.kind == "video":
+        #         pc.addTrack(
+        #             VideoTransformTrack(
+        #                 relay.subscribe(track), transform=params["video_transform"]
+        #             )
+        #         )
+        pc.addTrack(
+            VideoTransformTrack(player.video, transform=params.get("video_transform", None))
         )
 
-        if audio:
-            audio_sender = pc.addTrack(audio)
-            if args.audio_codec:
-                force_codec(pc, audio_sender, args.audio_codec)
-            elif args.play_without_decoding:
-                raise Exception("You must specify the audio codec using --audio-codec")
-
-        if video:
-            video_sender = pc.addTrack(video)
-            if args.video_codec:
-                force_codec(pc, video_sender, args.video_codec)
-            elif args.play_without_decoding:
-                raise Exception("You must specify the video codec using --video-codec")
-
+        # handle offer
         await pc.setRemoteDescription(offer)
 
+        # send answer
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
 
@@ -111,7 +128,7 @@ def create_local_tracks(
     play_from, decode
 ) -> tuple[MediaStreamTrack, MediaStreamTrack] | tuple[None, MediaStreamTrack]:
     global relay, webcam
-    
+
     if play_from:
         player = MediaPlayer(play_from, decode=decode)
         print(player)
@@ -146,27 +163,17 @@ def force_codec(pc, sender, forced_codec) -> None:
     )
 
 
-async def index(request):
-    content = open(os.path.join(ROOT, "index.html"), "r").read()
-    return web.Response(content_type="text/html", text=content)
-
-
-async def javascript(request):
-    content = open(os.path.join(ROOT, "client.js"), "r").read()
-    return web.Response(content_type="application/javascript", text=content)
-
-
 pcs = set()
 
 
 async def on_shutdown(app):
-    # close peer connections
+    # close peer conn ections
     coros = [pc.close() for pc in pcs]
     await asyncio.gather(*coros)
     pcs.clear()
 
 
-if __name__ == "__main__":
+async def main():
     parser = argparse.ArgumentParser(description="WebRTC webcam demo")
     parser.add_argument("--cert-file", help="SSL certificate file (for HTTPS)")
     parser.add_argument("--key-file", help="SSL key file (for HTTPS)")
@@ -206,5 +213,10 @@ if __name__ == "__main__":
     else:
         ssl_context = None
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(start_server())
+    # loop = asyncio.get_event_loop()
+    # loop.run_until_complete(start_server(args))
+    await start_server(args)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
